@@ -1,7 +1,7 @@
 [project]
 name = "mcp-for-blender"
-version = "2.3.1"
-description = "Open source Blender integration through the Model Context Protocol (not affiliated with Blender Foundation)"
+version = "2.3.1+minimal.1"
+description = "A local Blender MCP server for Python, scene inspection, and visual feedback"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -14,7 +14,6 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.26.0,<2",
-    "httpx>=0.27.0",
 ]
 
 [project.scripts]
@@ -32,8 +31,8 @@ build-backend = "setuptools.build_meta"
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-blender_mcp = ["bundled/addon.py", "apps/*.html", "guides/*.md"]
+blender_mcp = ["bundled/addon.py"]
 
 [project.urls]
-"Homepage" = "https://github.com/ahujasid/blender-mcp"
-"Bug Tracker" = "https://github.com/ahujasid/blender-mcp/issues"
+"Homepage" = "https://github.com/attashe/blender-mcp"
+"Bug Tracker" = "https://github.com/attashe/blender-mcp/issues"
