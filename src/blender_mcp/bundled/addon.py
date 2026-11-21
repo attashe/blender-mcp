@@ -18,14 +18,14 @@ import mathutils
 bl_info = {
     "name": "Blender MCP (Minimal)",
     "author": "Siddharth Ahuja, attashe",
-    "version": (2, 3, 1),
+    "version": (2, 3, 1, 3),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > BlenderMCP",
     "description": "Execute Python, inspect the scene and capture a view over localhost",
     "category": "Interface",
 }
 
-OBJECT_FIELDS = {"name", "type", "location", "rotation", "scale", "dimensions", "materials", "collections"}
+OBJECT_FIELDS = {"name", "type", "location", "rotation", "scale", "dimensions", "world_bounds", "materials", "collections"}
 OUTPUT_LIMIT = 16_384
 
 
@@ -72,7 +72,24 @@ def execute_code(code):
     return {"status": "success", "result": {"stdout": stdout.captured(), "stderr": stderr.captured()}}
 
 
-def _object_info(obj, fields):
+def _world_bounds(obj, depsgraph):
+    if obj.data is None or obj.type in {"CAMERA", "LIGHT", "LIGHT_PROBE", "SPEAKER"}:
+        return None
+    evaluated = obj.evaluated_get(depsgraph)
+    corners = [tuple(c) for c in evaluated.bound_box]
+    if not corners:
+        return None
+    if corners[0] in {(0, 0, 0), (-1, -1, -1)} and all(c == corners[0] for c in corners):
+        # Empty geometry and a real point at this coordinate can have identical boxes.
+        elements = {"MESH": "vertices", "CURVE": "splines", "SURFACE": "splines", "CURVES": "points",
+                    "FONT": "body", "META": "elements", "POINTCLOUD": "points", "ARMATURE": "bones"}
+        if not getattr(evaluated.data, elements.get(evaluated.type, ""), None):
+            return None
+    points = [evaluated.matrix_world @ mathutils.Vector(c) for c in corners]
+    return {"min": [min(axis) for axis in zip(*points)], "max": [max(axis) for axis in zip(*points)]}
+
+
+def _object_info(obj, fields, depsgraph):
     data = {"name": obj.name, "type": obj.type}
     for field in fields & {"location", "scale", "dimensions"}:
         data[field] = list(getattr(obj, field))
@@ -84,6 +101,8 @@ def _object_info(obj, fields):
         data["materials"] = [slot.material.name if slot.material else None for slot in obj.material_slots]
     if "collections" in fields:
         data["collections"] = [coll.name for coll in obj.users_collection]
+    if "world_bounds" in fields:
+        data["world_bounds"] = _world_bounds(obj, depsgraph)
     return data
 
 
@@ -116,6 +135,7 @@ def get_scene_info(objects=None, fields=None, limit=20, query=None):
         matching = (obj for obj in matching if substring in obj.name.casefold())
     # One extra match tells the caller whether there's more, even in a large scene.
     page = list(islice(matching, limit + 1))
+    depsgraph = context.evaluated_depsgraph_get() if page and "world_bounds" in fields else None
     selected = context.selected_objects
     collections = scene.collection.children_recursive
     active = context.view_layer.objects.active
@@ -132,7 +152,7 @@ def get_scene_info(objects=None, fields=None, limit=20, query=None):
         "collections": [coll.name for coll in islice(collections, limit)],
         "collection_count": len(collections),
         "object_count": len(scene.objects),
-        "objects": [_object_info(obj, fields) for obj in page[:limit]],
+        "objects": [_object_info(obj, fields, depsgraph) for obj in page[:limit]],
         "objects_truncated": len(page) > limit,
         "missing_objects": missing,
     }
@@ -163,24 +183,42 @@ def _preview_png(width, height, rgba):
             + chunk(b"IDAT", zlib.compress(rows, 3)) + chunk(b"IEND", b""))
 
 
-def _preview_render_result(max_size):
-    """Save the current render using its scene color management, then bound the image."""
+def _preview_image(name, max_size):
+    """Encode the current pixel buffer, including unsaved edits to packed images."""
+    from contextlib import ExitStack
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-    result = bpy.data.images.get("Render Result")
-    if result is None:
-        raise ValueError("No Render Result is available. Render a frame first.")
+    source = bpy.data.images.get(name)
+    if source is None:
+        if name == "Render Result":
+            raise ValueError("No Render Result is available. Render a frame first.")
+        raise ValueError(f"No Blender image datablock named {name!r}")
+    if source.is_multiview or (source.type != "RENDER_RESULT" and
+                               (source.source not in {"GENERATED", "FILE"} or
+                                source.type not in {"IMAGE", "UV_TEST"})):
+        raise ValueError(f"{name!r} needs a single still image; got {source.source}/{source.type}")
+    if source.type != "RENDER_RESULT" and min(source.size) < 1:
+        raise ValueError(f"No pixels available for image {name!r}")
+
     scene = bpy.context.scene
-    settings = scene.render.image_settings
-    options = (settings.file_format, settings.color_mode, settings.color_depth)
-    with TemporaryDirectory(prefix="blendermcp-look-") as directory:
+    with TemporaryDirectory(prefix="blendermcp-look-") as directory, ExitStack() as cleanup:
+        if source.type != "RENDER_RESULT" and not (source.is_float or source.use_view_as_render):
+            # Byte textures use standard display conversion independently of shot exposure.
+            # save_render also respects non-color inputs such as baked normal maps.
+            scene = bpy.data.scenes.new("BlenderMCP image encoding")
+            cleanup.callback(bpy.data.scenes.remove, scene)
+            scene.view_settings.view_transform = "Standard"
+            scene.render.dither_intensity = 0.0
+        settings = scene.render.image_settings
+        options = (settings.file_format, settings.color_mode, settings.color_depth)
         path = Path(directory) / "frame.png"
         try:
             settings.file_format = "PNG"
             settings.color_mode = "RGBA"
             settings.color_depth = "8"
-            result.save_render(str(path), scene=scene)
+            # Image.copy() may reconstruct the old file instead of copying dirty pixels.
+            source.save_render(str(path), scene=scene)
         finally:
             # Restore format before its dependent enum values.
             settings.file_format, settings.color_mode, settings.color_depth = options
@@ -315,7 +353,7 @@ def _preview_viewport(view, target, shading, max_size):
     return size[0], size[1], _preview_png(*size, rgba)
 
 
-def look(view="viewport", target=None, shading="current", max_size=768):
+def look(view="viewport", target=None, shading="current", max_size=768, image=None):
     import base64
 
     if view not in {"viewport", "front", "right", "top", "three_quarter", "camera", "render_result"}:
@@ -328,10 +366,16 @@ def look(view="viewport", target=None, shading="current", max_size=768):
         raise ValueError("target must be one exact object name")
     if target and view in {"camera", "render_result"}:
         raise ValueError(f"The {view} view has fixed framing. Omit target or choose an angle.")
-    if view == "render_result":
+    if image is not None:
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError("image must be one exact Blender image datablock name")
+        if view != "viewport" or target is not None or shading != "current":
+            raise ValueError("Use image with max_size only; omit view, shading and target")
+        width, height, png = _preview_image(image, max_size)
+    elif view == "render_result":
         if shading != "current":
             raise ValueError("render_result uses the shading of the rendered frame")
-        width, height, png = _preview_render_result(max_size)
+        width, height, png = _preview_image("Render Result", max_size)
     else:
         width, height, png = _preview_viewport(view, target, shading, max_size)
     return {"image": base64.b64encode(png).decode("ascii"), "mime_type": "image/png",

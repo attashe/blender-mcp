@@ -48,14 +48,17 @@ def test_tools_via_mcp_client(monkeypatch):
             assert (picture.content[0].data, picture.content[0].mimeType) == (png, "image/png")
             invalid = await client.call_tool("look", {"view": "unrecognised"})
             assert invalid.isError
-            found = await client.call_tool("get_scene_info", {"query": "horn", "limit": 3})
+            found = await client.call_tool("get_scene_info", {"query": "horn", "limit": 3, "fields": ["world_bounds"]})
             assert not found.isError
+            bake = await client.call_tool("look", {"image": "Bake"})
+            assert not bake.isError and bake.content[0].type == "image"
 
     asyncio.run(exercise())
-    assert [c for c, _ in requests] == ["execute_code", "get_scene_info", "look", "get_scene_info"]
+    assert [c for c, _ in requests] == ["execute_code", "get_scene_info", "look", "get_scene_info", "look"]
     assert requests[1][1] == {"fields": None, "objects": None, "limit": 20}
     assert requests[2][1]["target"] == "кривая"
-    assert requests[3][1] == {"objects": None, "fields": None, "limit": 3, "query": "horn"}
+    assert requests[3][1] == {"objects": None, "fields": ["world_bounds"], "limit": 3, "query": "horn"}
+    assert requests[4][1]["image"] == "Bake"
 
 
 def test_lost_script_response_is_not_replayed_and_next_inspection_reconnects():

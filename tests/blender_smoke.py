@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 import os
 import socket
 import struct
@@ -39,6 +40,29 @@ print(horn.name)
 """
 
 
+MEASURE_ARRAY = """
+import json
+box = bpy.context.scene.objects["Cube"]
+parent = bpy.data.objects.new("Bounds parent", None)
+bpy.context.collection.objects.link(parent)
+parent.rotation_euler.z = 0.8
+parent.location = (5, -4, 3)
+parent.scale = (0.75, 2.0, 1.25)
+box.parent = parent
+box.rotation_euler.y = 0.4
+box.scale.x = -1.5
+array = box.modifiers.new("Pair", "ARRAY")
+array.count = 2
+array.use_relative_offset = False
+array.use_constant_offset = True
+array.constant_offset_displace = (3, 0, 0)
+evaluated = box.evaluated_get(bpy.context.evaluated_depsgraph_get())
+vertices = [evaluated.matrix_world @ v.co for v in evaluated.data.vertices]
+assert len(vertices) == 16
+print(json.dumps({"min": [min(a) for a in zip(*vertices)], "max": [max(a) for a in zip(*vertices)]}))
+"""
+
+
 async def check(port, root, images):
     server = StdioServerParameters(command=sys.executable, args=["-m", "blender_mcp.server", "--port", str(port)])
     async with stdio_client(server) as streams, ClientSession(*streams) as client:
@@ -66,6 +90,31 @@ async def check(port, root, images):
 
         initial = await scene()
         assert not initial["file"] and initial["mode"] == "OBJECT"
+        measured = await call("execute_blender_code", code=MEASURE_ARRAY)
+        expected = json.loads(json.loads(measured.text)["stdout"])
+        boxes = await scene(objects=["Cube", "Bounds parent"], fields=["world_bounds"])
+        box, parent = boxes["objects"]
+        assert parent["world_bounds"] is None
+        for side in ("min", "max"):
+            for actual, wanted in zip(box["world_bounds"][side], expected[side], strict=True):
+                assert math.isclose(actual, wanted, abs_tol=1e-5)
+
+        await call("execute_blender_code", code=(
+            'im = bpy.data.images.new("Unsaved bake", 128, 64, alpha=True)\n'
+            'im.pixels.foreach_set([1.0, 0.0, 0.0, 1.0] * 8192)\nim.update()'
+        ))
+        red = await call("look", image="Unsaved bake", max_size=64)
+        assert red.type == "image" and red.mimeType == "image/png"
+        assert struct.unpack(">II", base64.b64decode(red.data)[16:24]) == (64, 32)
+        await call("execute_blender_code", code=(
+            'im = bpy.data.images["Unsaved bake"]\n'
+            'assert tuple(im.size) == (128, 64) and not im.filepath and im.is_dirty\n'
+            'im.pixels.foreach_set([0.0, 1.0, 0.0, 1.0] * 8192)\nim.update()'
+        ))
+        green = await call("look", image="Unsaved bake", max_size=64)
+        assert green.data != red.data
+        bad = await client.call_tool("look", {"image": "Unsaved bake", "view": "front"})
+        assert bad.isError
         made = await call("execute_blender_code", code=MAKE_HORN)
         assert json.loads(made.text)["stdout"].strip() == "Horn"
         first = await picture("before")
@@ -88,7 +137,8 @@ async def check(port, root, images):
         before = first_state["objects"][0]["dimensions"][0]
         after = final["objects"][0]["dimensions"][0]
         assert after > before + 0.3
-        print(f'Blender {initial["blender_version"]}: three tools, two PNGs, width {before:.3f} to {after:.3f}, saved file, live after SystemExit.')
+        print(f'Blender {initial["blender_version"]}: three tools, evaluated world bounds, unsaved image edits, '
+              f'two silhouettes, width {before:.3f} to {after:.3f}, saved file, live after SystemExit.')
 
 
 def run(blender, root, images):

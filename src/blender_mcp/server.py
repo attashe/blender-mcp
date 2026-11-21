@@ -167,7 +167,7 @@ async def _call(command: str, params: dict) -> CallToolResult:
         return _text_result({"error_type": type(exc).__name__, "message": str(exc)}, error=True)
 
 
-ObjectField = Literal["location", "rotation", "scale", "dimensions", "materials", "collections"]
+ObjectField = Literal["location", "rotation", "scale", "dimensions", "world_bounds", "materials", "collections"]
 
 
 @mcp.tool()
@@ -180,6 +180,7 @@ async def get_scene_info(
     """Inspect the open file, Blender version, mode, units, selection and objects.
     Query finds a case-insensitive substring in object names before applying limit.
     Objects restricts the search to exact names. Request fields for more detail.
+    world_bounds returns world-axis min/max of the evaluated bounding box, or null when unavailable.
     """
     params = {"objects": objects, "fields": fields, "limit": limit}
     if query is not None:
@@ -202,13 +203,19 @@ async def look(
     target: str | None = None,
     shading: Literal["current", "solid", "material"] = "current",
     max_size: Annotated[int, Field(ge=64, le=1600)] = 768,
+    image: str | None = None,
 ) -> CallToolResult:
     """Get a PNG of the working viewport, a named angle, camera view or last render.
     Target isolates and frames a visible object and its children in viewport or angle views.
     Use solid shading to inspect shape. render_result uses current shading and no target.
     Max_size bounds the longest image edge in pixels.
+    To read an image already in Blender, pass its exact datablock name in image
+    (including "Render Result"), with only max_size as an optional setting.
     """
-    return await _call("look", {"view": view, "target": target, "shading": shading, "max_size": max_size})
+    params = {"view": view, "target": target, "shading": shading, "max_size": max_size}
+    if image is not None:
+        params["image"] = image
+    return await _call("look", params)
 
 
 def main():
