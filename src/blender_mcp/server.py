@@ -175,12 +175,16 @@ async def get_scene_info(
     objects: list[str] | None = None,
     fields: list[ObjectField] | None = None,
     limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    query: str | None = None,
 ) -> CallToolResult:
     """Inspect the open file, Blender version, mode, units, selection and objects.
-    Objects are exact scene object names. Request optional fields for more detail.
-    Limit bounds the number of listed objects.
+    Query finds a case-insensitive substring in object names before applying limit.
+    Objects restricts the search to exact names. Request fields for more detail.
     """
-    return await _call("get_scene_info", {"objects": objects, "fields": fields, "limit": limit})
+    params = {"objects": objects, "fields": fields, "limit": limit}
+    if query is not None:
+        params["query"] = query
+    return await _call("get_scene_info", params)
 
 
 @mcp.tool()

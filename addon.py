@@ -87,7 +87,7 @@ def _object_info(obj, fields):
     return data
 
 
-def get_scene_info(objects=None, fields=None, limit=20):
+def get_scene_info(objects=None, fields=None, limit=20, query=None):
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("limit must be an integer between 1 and 100")
     fields = set(fields or ())
@@ -111,6 +111,11 @@ def get_scene_info(objects=None, fields=None, limit=20):
             else:
                 matching.append(obj)
 
+    if query:
+        substring = query.strip().casefold()
+        matching = (obj for obj in matching if substring in obj.name.casefold())
+    # One extra match tells the caller whether there's more, even in a large scene.
+    page = list(islice(matching, limit + 1))
     selected = context.selected_objects
     collections = scene.collection.children_recursive
     active = context.view_layer.objects.active
@@ -127,8 +132,8 @@ def get_scene_info(objects=None, fields=None, limit=20):
         "collections": [coll.name for coll in islice(collections, limit)],
         "collection_count": len(collections),
         "object_count": len(scene.objects),
-        "objects": [_object_info(obj, fields) for obj in islice(matching, limit)],
-        "objects_truncated": len(matching) > limit,
+        "objects": [_object_info(obj, fields) for obj in page[:limit]],
+        "objects_truncated": len(page) > limit,
         "missing_objects": missing,
     }
 

@@ -39,12 +39,12 @@ def test_script_bounds_output_separately_from_errors(addon):
     assert "after print" in result["traceback"]
 
 
-def test_inspect_uses_exact_names_and_reports_limits(addon):
+def set_scene_objects(addon, names):
     class Objects(list):
         def get(self, name):
             return next((obj for obj in self if obj.name == name), None)
 
-    items = Objects(SimpleNamespace(name=name, type="MESH", dimensions=(1, 2, 3)) for name in ("A", "B", "C"))
+    items = Objects(SimpleNamespace(name=name, type="MESH", dimensions=(1, 2, 3)) for name in names)
     scene = SimpleNamespace(
         name="Scene", objects=items, collection=SimpleNamespace(children_recursive=[]),
         unit_settings=SimpleNamespace(system="METRIC", length_unit="METERS", scale_length=1.0),
@@ -55,6 +55,10 @@ def test_inspect_uses_exact_names_and_reports_limits(addon):
         scene=scene, selected_objects=items, mode="OBJECT",
         view_layer=SimpleNamespace(objects=SimpleNamespace(active=items[1])),
     )
+
+
+def test_inspect_uses_exact_names_and_reports_limits(addon):
+    set_scene_objects(addon, ["A", "B", "C"])
     result = addon.get_scene_info(objects=["B", "miss", "C"], fields=["dimensions"], limit=1)
     assert result["object_count"] == 3
     assert result["objects"] == [{"name": "B", "type": "MESH", "dimensions": [1, 2, 3]}]
@@ -66,3 +70,19 @@ def test_inspect_uses_exact_names_and_reports_limits(addon):
     assert addon.get_scene_info()["objects"][0] == {"name": "A", "type": "MESH"}
     with pytest.raises(ValueError, match="Unknown object fields"):
         addon.get_scene_info(fields=["unknown"])
+
+
+def test_query_filters_before_limit_and_intersects_exact_names(addon):
+    set_scene_objects(addon, [f"Cube.{i}" for i in range(25)] + ["Straße.L", "STRASSE.R"])
+    result = addon.get_scene_info(query="STRASSE", limit=1)
+    assert result["object_count"] == 27
+    assert result["objects"] == [{"name": "Straße.L", "type": "MESH"}]
+    assert result["objects_truncated"]
+
+    result = addon.get_scene_info(objects=["STRASSE.R", "Cube.4", "missing"], query="straße", limit=1)
+    assert result["objects"] == [{"name": "STRASSE.R", "type": "MESH"}]
+    assert result["missing_objects"] == ["missing"]
+    assert not result["objects_truncated"]
+
+    empty = addon.get_scene_info(query="nonexistent")
+    assert empty["objects"] == [] and not empty["objects_truncated"]

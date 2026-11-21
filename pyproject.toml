@@ -1,6 +1,6 @@
 [project]
 name = "mcp-for-blender"
-version = "2.3.1+minimal.1"
+version = "2.3.1+minimal.2"
 description = "A local Blender MCP server for Python, scene inspection, and visual feedback"
 readme = "README.md"
 requires-python = ">=3.10"
